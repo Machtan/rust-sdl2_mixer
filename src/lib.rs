@@ -20,7 +20,6 @@ use libc::{c_int, uint16_t, c_double, c_uint};
 use sdl2::get_error;
 use sdl2::rwops::RWops;
 use sdl2::version::Version;
-use sdl2::SdlResult;
 
 // Setup linking for all targets.
 #[cfg(target_os="macos")]
@@ -155,7 +154,7 @@ impl Drop for Sdl2MixerContext {
 
 /// Loads dynamic libraries and prepares them for use.  Flags should be
 /// one or more flags from InitFlag.
-pub fn init(flags: InitFlag) -> SdlResult<Sdl2MixerContext> {
+pub fn init(flags: InitFlag) -> Result<Sdl2MixerContext, String> {
     let return_flags = unsafe {
         let ret = ffi::Mix_Init(flags.bits() as c_int);
         InitFlag::from_bits_truncate(ret as u32)
@@ -164,12 +163,14 @@ pub fn init(flags: InitFlag) -> SdlResult<Sdl2MixerContext> {
     if !flags.intersects(return_flags) {
         // Flags not matching won't always set the error message text
         // according to sdl docs
-        if get_error() == sdl2::ErrorMessage("".to_string()) {
+        let mut error = get_error();
+        if &error == "" {
             let un_init_flags = return_flags ^ flags;
-            let error_str = &("Could not init: ".to_string() + &un_init_flags.to_string());
-            sdl2::set_error(error_str);
+            error = format!(
+                "Could not init: {}", un_init_flags.to_string()
+            );
         }
-        Err(get_error())
+        Err(error)
     } else {
         Ok(Sdl2MixerContext)
     }
@@ -181,7 +182,7 @@ pub fn open_audio(frequency: isize,
                   format: AudioFormat,
                   channels: isize,
                   chunksize: isize)
-                  -> SdlResult<()> {
+                  -> Result<(), String> {
     let ret = unsafe {
         ffi::Mix_OpenAudio(frequency as c_int,
                            format,
@@ -201,11 +202,13 @@ pub fn close_audio() {
 }
 
 /// Get the actual audio format in use by the opened audio device.
-pub fn query_spec() -> SdlResult<(isize, AudioFormat, isize)> {
+pub fn query_spec() -> Result<(isize, AudioFormat, isize), String> {
     let frequency: c_int = 0;
     let format: uint16_t = 0;
     let channels: c_int = 0;
-    let ret = unsafe { ffi::Mix_QuerySpec(&frequency, &format, &channels) };
+    let ret = unsafe {
+        ffi::Mix_QuerySpec(&frequency, &format, &channels)
+    };
     if ret == 0 {
         Err(get_error())
     } else {
@@ -215,9 +218,12 @@ pub fn query_spec() -> SdlResult<(isize, AudioFormat, isize)> {
 
 // 4.2 Samples
 
-/// Get the number of sample chunk decoders available from the Mix_GetChunkDecoder function.
+/// Get the number of sample chunk decoders available from the
+/// Mix_GetChunkDecoder function.
 pub fn get_chunk_decoders_number() -> isize {
-    unsafe { ffi::Mix_GetNumChunkDecoders() as isize }
+    unsafe {
+        ffi::Mix_GetNumChunkDecoders() as isize
+    }
 }
 
 /// Get the name of the indexed sample chunk decoder.
@@ -238,15 +244,19 @@ pub struct Chunk {
 impl Drop for Chunk {
     fn drop(&mut self) {
         if self.owned {
-            unsafe { ffi::Mix_FreeChunk(self.raw) }
+            unsafe {
+                ffi::Mix_FreeChunk(self.raw)
+            }
         }
     }
 }
 
 impl Chunk {
     /// Load file for use as a sample.
-    pub fn from_file(path: &Path) -> SdlResult<Chunk> {
-        let raw = unsafe { ffi::Mix_LoadWAV_RW(try!(RWops::from_file(path, "rb")).raw(), 0) };
+    pub fn from_file(path: &Path) -> Result<Chunk, String> {
+        let raw = unsafe {
+            ffi::Mix_LoadWAV_RW(try!(RWops::from_file(path, "rb")).raw(), 0)
+        };
         if raw.is_null() {
             Err(get_error())
         } else {
@@ -259,24 +269,28 @@ impl Chunk {
 
     /// Set chunk->volume to volume.
     pub fn set_volume(&mut self, volume: isize) -> isize {
-        unsafe { ffi::Mix_VolumeChunk(self.raw, volume as c_int) as isize }
+        unsafe {
+            ffi::Mix_VolumeChunk(self.raw, volume as c_int) as isize
+        }
     }
 
     /// current volume for the chunk.
     pub fn get_volume(&self) -> isize {
-        unsafe { ffi::Mix_VolumeChunk(self.raw, -1) as isize }
+        unsafe {
+            ffi::Mix_VolumeChunk(self.raw, -1) as isize
+        }
     }
 }
 
 /// Loader trait for RWops
 pub trait LoaderRWops {
     /// Load src for use as a sample.
-    fn load_wav(&self) -> SdlResult<Chunk>;
+    fn load_wav(&self) -> Result<Chunk, String>;
 }
 
 impl<'a> LoaderRWops for RWops<'a> {
     /// Load src for use as a sample.
-    fn load_wav(&self) -> SdlResult<Chunk> {
+    fn load_wav(&self) -> Result<Chunk, String> {
         let raw = unsafe { ffi::Mix_LoadWAV_RW(self.raw(), 0) };
         if raw == ptr::null() {
             Err(get_error())
@@ -326,16 +340,19 @@ extern "C" fn c_channel_finished_callback(ch: c_int) {
     }
 }
 
-/// When channel playback is halted, then the specified channel_finished function is called.
+/// When channel playback is halted, then the specified channel_finished
+/// function is called.
 pub fn set_channel_finished(f: fn(Channel)) {
     unsafe {
         channel_finished_callback = Some(f);
-        ffi::Mix_ChannelFinished(Some(c_channel_finished_callback as extern "C" fn(ch: c_int)));
+        ffi::Mix_ChannelFinished(
+            Some(c_channel_finished_callback as extern "C" fn(ch: c_int))
+        );
     }
 }
 
-/// Unhooks the specified function set before, so no function is called when channel playback is
-/// halted.
+/// Unhooks the specified function set before, so no function is called when
+/// channel playback is halted.
 pub fn unset_channel_finished() {
     unsafe {
         ffi::Mix_ChannelFinished(None);
@@ -366,15 +383,20 @@ impl Channel {
         unsafe { ffi::Mix_Volume(ch as c_int, -1) as isize }
     }
 
-    /// Play chunk on channel, or if channel is -1, pick the first free unreserved channel.
-    pub fn play(self, chunk: &Chunk, loops: isize) -> SdlResult<Channel> {
+    /// Play chunk on channel, or if channel is -1, pick the first free
+    /// unreserved channel.
+    pub fn play(self, chunk: &Chunk, loops: isize) -> Result<Channel, String> {
         self.play_timed(chunk, loops, -1)
     }
 
-    pub fn play_timed(self, chunk: &Chunk, loops: isize, ticks: isize) -> SdlResult<Channel> {
+    pub fn play_timed(self, chunk: &Chunk, loops: isize, ticks: isize)
+            -> Result<Channel, String> {
+        
         let Channel(ch) = self;
         let ret = unsafe {
-            ffi::Mix_PlayChannelTimed(ch as c_int, chunk.raw, loops as c_int, ticks as c_int)
+            ffi::Mix_PlayChannelTimed(
+                ch as c_int, chunk.raw, loops as c_int, ticks as c_int
+            )
         };
         if ret == -1 {
             Err(get_error())
@@ -383,24 +405,24 @@ impl Channel {
         }
     }
 
-    /// Play chunk on channel, or if channel is -1, pick the first free unreserved channel.
-    pub fn fade_in(self, chunk: &Chunk, loops: isize, ms: isize) -> SdlResult<Channel> {
+    /// Play chunk on channel, or if channel is -1, pick the first free
+    /// unreserved channel.
+    pub fn fade_in(self, chunk: &Chunk, loops: isize, ms: isize)
+            -> Result<Channel, String> {
+        
         self.fade_in_timed(chunk, loops, ms, -1)
     }
 
-    pub fn fade_in_timed(self,
-                         chunk: &Chunk,
-                         loops: isize,
-                         ms: isize,
-                         ticks: isize)
-                         -> SdlResult<Channel> {
+    pub fn fade_in_timed(self, chunk: &Chunk, loops: isize, ms: isize, 
+            ticks: isize)
+            -> Result<Channel, String> {
+        
         let Channel(ch) = self;
         let ret = unsafe {
-            ffi::Mix_FadeInChannelTimed(ch as c_int,
-                                        chunk.raw,
-                                        loops as c_int,
-                                        ms as c_int,
-                                        ticks as c_int)
+            ffi::Mix_FadeInChannelTimed(
+                ch as c_int, chunk.raw, loops as c_int, ms as c_int, 
+                ticks as c_int
+            )
         };
         if ret == -1 {
             Err(get_error())
@@ -436,31 +458,41 @@ impl Channel {
     /// Halt channel playback, after ticks milliseconds.
     pub fn expire(self, ticks: isize) -> isize {
         let Channel(ch) = self;
-        unsafe { ffi::Mix_ExpireChannel(ch as c_int, ticks as c_int) as isize }
+        unsafe { 
+            ffi::Mix_ExpireChannel(ch as c_int, ticks as c_int) as isize
+        }
     }
 
     /// Gradually fade out which channel over ms milliseconds starting from now.
     pub fn fade_out(self, ms: isize) -> isize {
         let Channel(ch) = self;
-        unsafe { ffi::Mix_FadeOutChannel(ch as c_int, ms as c_int) as isize }
+        unsafe { 
+            ffi::Mix_FadeOutChannel(ch as c_int, ms as c_int) as isize
+        }
     }
 
     /// if channel is playing, or not.
     pub fn is_playing(self) -> bool {
         let Channel(ch) = self;
-        unsafe { ffi::Mix_Playing(ch as c_int) != 0 }
+        unsafe {
+            ffi::Mix_Playing(ch as c_int) != 0
+        }
     }
 
     ///  if channel is paused, or not.
     pub fn is_paused(self) -> bool {
         let Channel(ch) = self;
-        unsafe { ffi::Mix_Paused(ch as c_int) != 0 }
+        unsafe {
+            ffi::Mix_Paused(ch as c_int) != 0
+        }
     }
 
     /// if channel is fading in, out, or not
     pub fn get_fading(self) -> Fading {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_FadingChannel(ch as c_int) as c_uint };
+        let ret = unsafe { 
+            ffi::Mix_FadingChannel(ch as c_int) as c_uint
+        };
         match ret {
             ffi::MIX_NO_FADING => Fading::NoFading,
             ffi::MIX_FADING_OUT => Fading::FadingOut,
@@ -472,7 +504,9 @@ impl Channel {
     /// Get the most recent sample chunk pointer played on channel.
     pub fn get_chunk(self) -> Option<Chunk> {
         let Channel(ch) = self;
-        let raw = unsafe { ffi::Mix_GetChunk(ch as c_int) };
+        let raw = unsafe {
+            ffi::Mix_GetChunk(ch as c_int)
+        };
         if raw.is_null() {
             None
         } else {
@@ -484,9 +518,11 @@ impl Channel {
     }
 
     /// This removes all effects registered to channel.
-    pub fn unregister_all_effects(self) -> SdlResult<()> {
+    pub fn unregister_all_effects(self) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_UnregisterAllEffects(ch as c_int) };
+        let ret = unsafe {
+            ffi::Mix_UnregisterAllEffects(ch as c_int)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -494,11 +530,14 @@ impl Channel {
         }
     }
 
-    /// Sets a panning effect, where left and right is the volume of the left and right channels.
+    /// Sets a panning effect, where left and right is the volume of the left 
+    /// and right channels.
     /// They range from 0 (silence) to 255 (loud).
-    pub fn set_panning(self, left: u8, right: u8) -> SdlResult<()> {
+    pub fn set_panning(self, left: u8, right: u8) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetPanning(ch as c_int, left, right) };
+        let ret = unsafe {
+            ffi::Mix_SetPanning(ch as c_int, left, right)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -507,9 +546,11 @@ impl Channel {
     }
 
     /// Unregisters panning effect.
-    pub fn unset_panning(self) -> SdlResult<()> {
+    pub fn unset_panning(self) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetPanning(ch as c_int, 255, 255) };
+        let ret = unsafe {
+            ffi::Mix_SetPanning(ch as c_int, 255, 255)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -519,9 +560,11 @@ impl Channel {
 
     /// This effect simulates a simple attenuation of volume due to distance.
     /// distance ranges from 0 (close/loud) to 255 (far/quiet).
-    pub fn set_distance(self, distance: u8) -> SdlResult<()> {
+    pub fn set_distance(self, distance: u8) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetDistance(ch as c_int, distance) };
+        let ret = unsafe {
+            ffi::Mix_SetDistance(ch as c_int, distance)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -530,9 +573,11 @@ impl Channel {
     }
 
     /// Unregisters distance effect.
-    pub fn unset_distance(self) -> SdlResult<()> {
+    pub fn unset_distance(self) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetDistance(ch as c_int, 0) };
+        let ret = unsafe {
+            ffi::Mix_SetDistance(ch as c_int, 0)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -541,11 +586,14 @@ impl Channel {
     }
 
     /// This effect emulates a simple 3D audio effect.
-    /// angle ranges from 0 to 360 degrees going clockwise, where 0 is directly in front.
+    /// angle ranges from 0 to 360 degrees going clockwise, where 0 is 
+    /// directly in front.
     /// distance ranges from 0 (close/loud) to 255 (far/quiet).
-    pub fn set_position(self, angle: i16, distance: u8) -> SdlResult<()> {
+    pub fn set_position(self, angle: i16, distance: u8) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetPosition(ch as c_int, angle, distance) };
+        let ret = unsafe {
+            ffi::Mix_SetPosition(ch as c_int, angle, distance)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -554,9 +602,11 @@ impl Channel {
     }
 
     /// Unregisters position effect.
-    pub fn unset_position(self) -> SdlResult<()> {
+    pub fn unset_position(self) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetPosition(ch as c_int, 0, 0) };
+        let ret = unsafe {
+            ffi::Mix_SetPosition(ch as c_int, 0, 0)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -566,9 +616,11 @@ impl Channel {
 
     /// Simple reverse stereo, swaps left and right channel sound.
     /// true for reverse, false to unregister effect.
-    pub fn set_reverse_stereo(self, flip: bool) -> SdlResult<()> {
+    pub fn set_reverse_stereo(self, flip: bool) -> Result<(), String> {
         let Channel(ch) = self;
-        let ret = unsafe { ffi::Mix_SetReverseStereo(ch as c_int, flip as c_int) };
+        let ret = unsafe {
+            ffi::Mix_SetReverseStereo(ch as c_int, flip as c_int)
+        };
         if ret == 0 {
             Err(get_error())
         } else {
@@ -579,12 +631,16 @@ impl Channel {
 
 /// Returns how many channels are currently playing.
 pub fn get_playing_channels_number() -> isize {
-    unsafe { ffi::Mix_Playing(-1) as isize }
+    unsafe {
+        ffi::Mix_Playing(-1) as isize
+    }
 }
 
 /// Returns how many channels are currently paused.
 pub fn get_paused_channels_number() -> isize {
-    unsafe { ffi::Mix_Paused(-1) as isize }
+    unsafe {
+        ffi::Mix_Paused(-1) as isize
+    }
 }
 
 // 4.4 Groups
@@ -592,7 +648,9 @@ pub fn get_paused_channels_number() -> isize {
 /// Reserve num channels from being used when playing samples when
 /// passing in -1 as a channel number to playback functions.
 pub fn reserve_channels(num: isize) -> isize {
-    unsafe { ffi::Mix_ReserveChannels(num as c_int) as isize }
+    unsafe {
+        ffi::Mix_ReserveChannels(num as c_int) as isize
+    }
 }
 
 /// Sound effect channel grouping.
@@ -610,25 +668,36 @@ impl Group {
     /// or reset it's group to the default group tag (-1).
     pub fn add_channels_range(self, from: isize, to: isize) -> isize {
         let Group(g) = self;
-        unsafe { ffi::Mix_GroupChannels(from as c_int, to as c_int, g as c_int) as isize }
+        unsafe {
+            ffi::Mix_GroupChannels(
+                from as c_int, to as c_int, g as c_int
+            ) as isize
+        }
     }
 
-    /// Add which channel to group tag, or reset it's group to the default group tag
+    /// Add which channel to group tag, or reset it's group to the default
+    /// group tag.
     pub fn add_channel(self, Channel(ch): Channel) -> bool {
         let Group(g) = self;
-        unsafe { ffi::Mix_GroupChannel(ch as c_int, g as c_int) == 1 }
+        unsafe {
+            ffi::Mix_GroupChannel(ch as c_int, g as c_int) == 1
+        }
     }
 
     /// Count the number of channels in group
     pub fn count(self) -> isize {
         let Group(g) = self;
-        unsafe { ffi::Mix_GroupCount(g as c_int) as isize }
+        unsafe {
+            ffi::Mix_GroupCount(g as c_int) as isize
+        }
     }
 
     /// Find the first available (not playing) channel in group
     pub fn find_available(self) -> Option<Channel> {
         let Group(g) = self;
-        let ret = unsafe { ffi::Mix_GroupAvailable(g as c_int) as isize };
+        let ret = unsafe {
+            ffi::Mix_GroupAvailable(g as c_int) as isize
+        };
         if ret == -1 {
             None
         } else {
@@ -639,7 +708,9 @@ impl Group {
     /// Find the oldest actively playing channel in group
     pub fn find_oldest(self) -> Option<Channel> {
         let Group(g) = self;
-        let ret = unsafe { ffi::Mix_GroupOldest(g as c_int) as isize };
+        let ret = unsafe {
+            ffi::Mix_GroupOldest(g as c_int) as isize
+        };
         if ret == -1 {
             None
         } else {
@@ -650,7 +721,9 @@ impl Group {
     /// Find the newest, most recently started, actively playing channel in group.
     pub fn find_newest(self) -> Option<Channel> {
         let Group(g) = self;
-        let ret = unsafe { ffi::Mix_GroupNewer(g as c_int) as isize };
+        let ret = unsafe {
+            ffi::Mix_GroupNewer(g as c_int) as isize
+        };
         if ret == -1 {
             None
         } else {
@@ -658,11 +731,14 @@ impl Group {
         }
     }
 
-    /// Gradually fade out channels in group over some milliseconds starting from now.
+    /// Gradually fade out channels in group over some milliseconds starting
+    /// from now.
     /// Returns the number of channels set to fade out.
     pub fn fade_out(self, ms: isize) -> isize {
         let Group(g) = self;
-        unsafe { ffi::Mix_FadeOutGroup(g as c_int, ms as c_int) as isize }
+        unsafe {
+            ffi::Mix_FadeOutGroup(g as c_int, ms as c_int) as isize
+        }
     }
 
     /// Halt playback on all channels in group.
@@ -678,7 +754,9 @@ impl Group {
 
 /// Get the number of music decoders available.
 pub fn get_music_decoders_number() -> isize {
-    unsafe { ffi::Mix_GetNumMusicDecoders() as isize }
+    unsafe {
+        ffi::Mix_GetNumMusicDecoders() as isize
+    }
 }
 
 /// Get the name of the indexed music decoder.
@@ -741,9 +819,10 @@ impl fmt::Debug for Music {
 
 impl Music {
     /// Load music file to use.
-    pub fn from_file(path: &Path) -> SdlResult<Music> {
+    pub fn from_file(path: &Path) -> Result<Music, String> {
+        let c_str = CString::new(path.to_str().unwrap()).unwrap();
         let raw = unsafe {
-            ffi::Mix_LoadMUS(CString::new(path.to_str().unwrap()).unwrap().as_ptr())
+            ffi::Mix_LoadMUS(c_str.as_ptr())
         };
         if raw.is_null() {
             Err(get_error())
@@ -757,7 +836,9 @@ impl Music {
 
     /// The file format encoding of the music.
     pub fn get_type(&self) -> MusicType {
-        let ret = unsafe { ffi::Mix_GetMusicType(self.raw) as isize } as c_uint;
+        let ret = unsafe {
+            ffi::Mix_GetMusicType(self.raw) as c_uint
+        };
         match ret {
             ffi::MUS_NONE => MusicType::MusicNone,
             ffi::MUS_CMD => MusicType::MusicCmd,
@@ -774,8 +855,10 @@ impl Music {
     }
 
     /// Play the loaded music loop times through from start to finish.
-    pub fn play(&self, loops: isize) -> SdlResult<()> {
-        let ret = unsafe { ffi::Mix_PlayMusic(self.raw, loops as c_int) };
+    pub fn play(&self, loops: isize) -> Result<(), String> {
+        let ret = unsafe {
+            ffi::Mix_PlayMusic(self.raw, loops as c_int)
+        };
         if ret == -1 {
             Err(get_error())
         } else {
@@ -785,8 +868,10 @@ impl Music {
 
     /// Fade in over ms milliseconds of time, the loaded music,
     /// playing it loop times through from start to finish.
-    pub fn fade_in(&self, loops: isize, ms: isize) -> SdlResult<()> {
-        let ret = unsafe { ffi::Mix_FadeInMusic(self.raw, loops as c_int, ms as c_int) };
+    pub fn fade_in(&self, loops: isize, ms: isize) -> Result<(), String> {
+        let ret = unsafe {
+            ffi::Mix_FadeInMusic(self.raw, loops as c_int, ms as c_int)
+        };
         if ret == -1 {
             Err(get_error())
         } else {
@@ -795,9 +880,13 @@ impl Music {
     }
 
     /// Fade in over ms milliseconds of time, from position.
-    pub fn fade_in_from_pos(&self, loops: isize, ms: isize, position: f64) -> SdlResult<()> {
+    pub fn fade_in_from_pos(&self, loops: isize, ms: isize, position: f64)
+            -> Result<(), String> {
+        
         let ret = unsafe {
-            ffi::Mix_FadeInMusicPos(self.raw, loops as c_int, ms as c_int, position as c_double)
+            ffi::Mix_FadeInMusicPos(
+                self.raw, loops as c_int, ms as c_int, position as c_double
+            )
         };
         if ret == -1 {
             Err(get_error())
@@ -809,14 +898,18 @@ impl Music {
     // FIXME: make these class method?
     /// Returns current volume
     pub fn get_volume() -> isize {
-        unsafe { ffi::Mix_VolumeMusic(-1) as isize }
+        unsafe {
+            ffi::Mix_VolumeMusic(-1) as isize
+        }
     }
 
     /// Set the volume on a scale of 0 to 128.
     /// Values greater than 128 will use 128.
     pub fn set_volume(volume: isize) {
         // This shouldn't return anything. Use get_volume instead
-        let _ = unsafe { ffi::Mix_VolumeMusic(volume as c_int) as isize };
+        let _ = unsafe {
+            ffi::Mix_VolumeMusic(volume as c_int) as isize
+        };
     }
 
     /// Pause the music playback.
@@ -841,8 +934,10 @@ impl Music {
     }
 
     /// Set the position of the currently playing music.
-    pub fn set_pos(position: f64) -> SdlResult<()> {
-        let ret = unsafe { ffi::Mix_SetMusicPosition(position as c_double) };
+    pub fn set_pos(position: f64) -> Result<(), String> {
+        let ret = unsafe {
+            ffi::Mix_SetMusicPosition(position as c_double)
+        };
         if ret == -1 {
             Err(get_error())
         } else {
@@ -851,8 +946,10 @@ impl Music {
     }
 
     /// Setup a command line music player to use to play music.
-    pub fn set_command(command: &str) -> SdlResult<()> {
-        let ret = unsafe { ffi::Mix_SetMusicCMD(CString::new(command).unwrap().as_ptr()) };
+    pub fn set_command(command: &str) -> Result<(), String> {
+        let ret = unsafe {
+            ffi::Mix_SetMusicCMD(CString::new(command).unwrap().as_ptr())
+        };
         if ret == -1 {
             Err(get_error())
         } else {
@@ -868,7 +965,7 @@ impl Music {
     }
 
     /// Gradually fade out the music over ms milliseconds starting from now.
-    pub fn fade_out(ms: isize) -> SdlResult<()> {
+    pub fn fade_out(ms: isize) -> Result<(), String> {
         let ret = unsafe { ffi::Mix_FadeOutMusic(ms as c_int) };
         if ret == -1 {
             Err(get_error())
@@ -909,17 +1006,23 @@ impl Music {
 
     /// If music is actively playing, or not.
     pub fn is_playing() -> bool {
-        unsafe { ffi::Mix_PlayingMusic() == 1 }
+        unsafe {
+            ffi::Mix_PlayingMusic() == 1
+        }
     }
 
     /// If music is paused, or not.
     pub fn is_paused() -> bool {
-        unsafe { ffi::Mix_PausedMusic() == 1 }
+        unsafe {
+            ffi::Mix_PausedMusic() == 1
+        }
     }
 
     /// If music is fading, or not.
     pub fn get_fading() -> Fading {
-        let ret = unsafe { ffi::Mix_FadingMusic() as isize } as c_uint;
+        let ret = unsafe {
+            ffi::Mix_FadingMusic() as c_uint
+        };
         match ret {
             ffi::MIX_NO_FADING => Fading::NoFading,
             ffi::MIX_FADING_OUT => Fading::FadingOut,
